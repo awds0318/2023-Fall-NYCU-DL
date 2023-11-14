@@ -1,0 +1,27 @@
+.DS_Store
+.idea
+.vscode
+.docx
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ignore images
+#*.jpg
+#*.JPG
+#*.png
+#*.PNG
+#*.jpeg
+#*.JPEG
+
+# Ignore annotations
+#*.xml
+#*.XML
+#*.txt
+#*.TXT
+#*.yaml
+#*.YAML
+#*.json
+#*.JSON
