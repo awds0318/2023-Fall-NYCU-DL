@@ -1,0 +1,1 @@
+[使用Numpy實作一個簡單的四層全連接神經網路](https://zhuanlan.zhihu.com/p/377634925)
