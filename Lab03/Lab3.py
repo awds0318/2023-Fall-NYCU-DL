@@ -1,10 +1,5 @@
 import torch
-import numpy as np
 import torch.nn as nn
-
-
-# https://blog.csdn.net/qq_43042024/article/details/121082742
-
 
 # TODO:改成這個
 # https://zhuanlan.zhihu.com/p/411311520
@@ -19,9 +14,9 @@ class MutiAttention(nn.Module):
         super(MutiAttention, self).__init__()
         assert dim_k % nums_head == 0
         assert dim_v % nums_head == 0
-        self.q = nn.Linear(input_dim, dim_k)
-        self.k = nn.Linear(input_dim, dim_k)
-        self.v = nn.Linear(input_dim, dim_v)
+        self.q = nn.Linear(input_dim, dim_k, bias=False)
+        self.k = nn.Linear(input_dim, dim_k, bias=False)
+        self.v = nn.Linear(input_dim, dim_v, bias=False)
 
         self.nums_head = nums_head
         self.dim_k = dim_k
@@ -53,7 +48,7 @@ class FeedForward(nn.Module):
         )
         self.d_model = d_model
 
-    def forward(self, x, d_model):
+    def forward(self, x):
         output = self.fc(x)
         return nn.LayerNorm(self.d_model).cuda()(output + x)  # ADD And Layer Norm
 
@@ -64,19 +59,25 @@ class TransformerEncoderLayer(nn.Module):
         d_model: token embedding's dimension
         dim_feedforaward: feedforward hidden layer's dimension = d_model * 4
         """
+        self.dim_k = d_model % nhead
+        self.dim_v = d_model % nhead
         super(TransformerEncoderLayer, self).__init__()
-        self.muti_attention = MutiAttention()
-        self.feed_forward = FeedForward()
+        self.muti_attention = MutiAttention(d_model, self.dim_k, self.dim_v, nhead)
+        self.feed_forward = FeedForward(d_model, dim_feedforward, dropout)
 
     def forward(self, x):
         output = self.muti_attention.forward(x)
-        output = self.feed_forward(output)
+        output = self.feed_forward.forward(output)
         return output
 
 
 class TransformerEncoder(nn.Module):
     def __init__(self, num_layers):
-        super().__init__()
+        super(TransformerEncoder, self).__init__()
+        self.encoder_layer1 = TransformerEncoderLayer()
+        self.encoder_layer2 = TransformerEncoderLayer()
+        self.encoder_layer3 = TransformerEncoderLayer()
+        self.encoder_layer4 = TransformerEncoderLayer()
 
     def forward(self, x):
         return
