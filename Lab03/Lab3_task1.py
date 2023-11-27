@@ -158,9 +158,7 @@ class MultiAttention(nn.Module):
         output = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.dim_k)
         output = torch.softmax(output, dim=-1)
         output = torch.matmul(output, V)
-        # combine heads + output trans
-        output = self.o(self.combine(output))
-        return output
+        return self.o(self.combine(output))  # combine heads + output transformation
 
 
 class FeedForward(nn.Module):
