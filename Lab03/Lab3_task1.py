@@ -195,13 +195,13 @@ class PositionalEncoding(nn.Module):
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, nheads, dim_feedforaward, dropout):
         super(TransformerEncoderLayer, self).__init__()
-        self.muti_atten = MultiAttention(d_model, nheads)
+        self.multi_attention = MultiAttention(d_model, nheads)
         self.feed_forward = FeedForward(d_model, dim_feedforaward)
         self.norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        output = self.muti_atten(x, x, x)
+        output = self.multi_attention(x, x, x)
         x = self.norm(x + self.dropout(output))  # add & norm
         output = self.feed_forward(x)
         return self.norm(x + self.dropout(output))  # add & norm
@@ -225,8 +225,8 @@ class TransformerEncoder(nn.Module):
     def forward(self, x):
         x = self.dropout(self.positional_encoding(self.embedding(x)))
         for layer in self.layers:
-            output = layer(x)
-        return output
+            x = layer(x)
+        return x
 
 
 class Classifier(nn.Module):
@@ -441,6 +441,31 @@ if __name__ == "__main__":
     main(**parse_args())
 
 
+class InferenceDataset(Dataset):
+    def __init__(self, data_dir):
+        testdata_path = Path(data_dir) / "testdata.json"
+        metadata = json.load(testdata_path.open())
+        self.data_dir = data_dir
+        self.data = metadata["utterances"]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        utterance = self.data[index]
+        feat_path = utterance["feature_path"]
+        mel = torch.load(os.path.join(self.data_dir, feat_path))
+
+        return feat_path, mel
+
+
+def inference_collate_batch(batch):
+    """Collate a batch of data."""
+    feat_paths, mels = zip(*batch)
+
+    return feat_paths, torch.stack(mels)
+
+
 def parse_args():
     """arguments"""
     config = {
@@ -473,13 +498,13 @@ def main(
         num_workers=8,
         collate_fn=inference_collate_batch,
     )
-    print(f"[Info]: Finish loading data!", flush=True)
+    print("[Info]: Finish loading data!", flush=True)
 
     speaker_num = len(mapping["id2speaker"])
     model = Classifier(n_spks=speaker_num).to(device)
     model.load_state_dict(torch.load(model_path))
     model.eval()
-    print(f"[Info]: Finish creating model!", flush=True)
+    print("[Info]: Finish creating model!", flush=True)
 
     results = [["Id", "Category"]]
     for feat_paths, mels in tqdm(dataloader):

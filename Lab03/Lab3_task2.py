@@ -158,77 +158,86 @@ class MultiAttention(nn.Module):
         output = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.dim_k)
         output = torch.softmax(output, dim=-1)
         output = torch.matmul(output, V)
-        # combine heads + output trans
-        output = self.o(self.combine(output))
-        return output
+        return self.o(self.combine(output))  # combine heads + output transformation
 
 
-class FeedForward(nn.Module):
-    def __init__(self, d_model, dim_feedforaward):
-        super(FeedForward, self).__init__()
-        self.feed_forward = nn.Sequential(
-            nn.Linear(d_model, dim_feedforaward),
+class ConformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, nheads, dim_feedforward, dropout=0.1):
+        super(ConformerEncoderLayer, self).__init__()
+        self.multi_attention = MultiAttention(d_model, nheads)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.feedforward = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
             nn.ReLU(),
-            nn.Linear(dim_feedforaward, d_model),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout),
         )
-
-    def forward(self, x):
-        return self.feed_forward(x)
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=1024):
-        super(PositionalEncoding, self).__init__()
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * -(math.log(10000) / d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.conv1d = nn.Conv1d(
+            d_model, 2 * d_model, kernel_size=3, padding=1, bias=False
         )
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe.unsqueeze(0))
-        self.dropout = nn.Dropout(0.1)
-
-    def forward(self, x):
-        return self.dropout(x + self.pe[:, : x.size(1)])
-
-
-class TransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nheads, dim_feedforaward, dropout):
-        super(TransformerEncoderLayer, self).__init__()
-        self.muti_atten = MultiAttention(d_model, nheads)
-        self.feed_forward = FeedForward(d_model, dim_feedforaward)
-        self.norm = nn.LayerNorm(d_model)
+        self.glu = nn.GLU(dim=1)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm3 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        output = self.muti_atten(x, x, x)
-        x = self.norm(x + self.dropout(output))  # add & norm
-        output = self.feed_forward(x)
-        return self.norm(x + self.dropout(output))  # add & norm
+        # multi-head self-attention
+        attn_output = self.multi_attention(x, x, x)
+        x = x + attn_output
+        x = self.norm1(x)
+
+        # feedforward network
+        feedforward_output = self.feedforward(x)
+        x = x + feedforward_output
+        x = self.norm2(x)
+
+        # convolutinal layer
+        residual = x
+        x = x.transpose(1, 2)
+        x = self.conv1d(x)
+        x = self.glu(x)
+        x = x.transpose(1, 2)
+        x = self.linear2(F.relu(self.linear1(x)))
+        x = self.norm3(x + residual)
+
+        return self.dropout(x)
 
 
-class TransformerEncoder(nn.Module):
+class ConformerEncoder(nn.Module):
     def __init__(
-        self, num_layers, input_size, d_model, n_heads, dim_feedforaward, dropout
+        self,
+        input_size,
+        output_size,
+        d_model,
+        nheads,
+        dim_feedforward,
+        num_layers,
+        dropout=0.1,
     ):
-        super(TransformerEncoder, self).__init__()
-        self.embedding = nn.Embedding(input_size, d_model)
-        self.positional_encoding = PositionalEncoding(d_model)
+        super(ConformerEncoder, self).__init__()
+        self.conv1d = nn.Conv1d(
+            input_size, d_model, kernel_size=3, padding=1  # , bias=False
+        )
+        self.positional_encoding = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.dropout = nn.Dropout(dropout)
         self.layers = nn.ModuleList(
             [
-                TransformerEncoderLayer(d_model, n_heads, dim_feedforaward, dropout)
+                ConformerEncoderLayer(d_model, nheads, dim_feedforward, dropout)
                 for _ in range(num_layers)
             ]
         )
-        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(d_model, output_size)
 
     def forward(self, x):
-        x = self.dropout(self.positional_encoding(self.embedding(x)))
-        for layer in self.layers:
-            output = layer(x)
-        return output
+        x = self.conv1d(x)  # convolutional layer
+        x = x + self.positional_encoding[:, :, : x.size(2)]  # positional encoding
+        for layer in self.layers:  # conformer blocks
+            x = layer(x)
+        x = x.mean(dim=2)  # global average pooling
+        return self.fc(x)  # linear layer
 
 
 class Classifier(nn.Module):
@@ -237,19 +246,20 @@ class Classifier(nn.Module):
         # Project the dimension of features from that of input into d_model.
         self.prenet = nn.Linear(40, d_model)
         # TODO:
-        #   Build vanilla transformer encoder block from scratch !!!
-        #   You can't call the transformer encoder block function from PyTorch library !!!
+        #   Build vanilla transformer encoder layer from scratch !!!
+        #   You can't call the transformer encoder layer function from PyTorch library !!!
         #   The number of encoder layers should be less than 4 !!!
-        #   The parameter size of transformer encoder block should be less than 500k !!!
-        self.encoder_layer = TransformerEncoderLayer(
-            d_model=d_model, nheads=80, dim_feedforaward=770, dropout=dropout
+        #   The parameter size of transformer encoder layer should be less than 500k !!!
+        self.encoder_layer = ConformerEncoderLayer(
+            d_model=d_model, nheads=80, dim_feedforward=770, dropout=dropout
         )
-        self.encoder = TransformerEncoder(
+        self.encoder = ConformerEncoder(
             num_layers=3,
             input_size=n_spks,
+            output_size=n_spks,
             d_model=d_model,
-            n_heads=80,
-            dim_feedforaward=770,
+            nheads=80,
+            dim_feedforward=64,
             dropout=dropout,
         )
         # Project the the dimension of features from d_model into speaker nums.
@@ -273,7 +283,7 @@ class Classifier(nn.Module):
 
 encoderblock = Classifier()
 param_enc = sum(p.numel() for p in encoderblock.encoder.parameters())
-print(f"The parameter size of encoder block is {param_enc/1000}k")
+print(f"The parameter size of encoder layer is {param_enc/1000}k")
 
 
 def get_cosine_schedule_with_warmup(
@@ -437,64 +447,6 @@ def main(
             )
 
     pbar.close()
-
-
-if __name__ == "__main__":
-    main(**parse_args())
-
-
-def parse_args():
-    """arguments"""
-    config = {
-        "data_dir": "./Dataset",
-        "model_path": "./brian_model.ckpt",
-        "output_path": "./brain_output.csv",
-    }
-
-    return config
-
-
-def main(
-    data_dir,
-    model_path,
-    output_path,
-):
-    """Main function."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Info]: Use {device} now!")
-
-    mapping_path = Path(data_dir) / "mapping.json"
-    mapping = json.load(mapping_path.open())
-
-    dataset = InferenceDataset(data_dir)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=1,
-        shuffle=False,
-        drop_last=False,
-        num_workers=8,
-        collate_fn=inference_collate_batch,
-    )
-    print(f"[Info]: Finish loading data!", flush=True)
-
-    speaker_num = len(mapping["id2speaker"])
-    model = Classifier(n_spks=speaker_num).to(device)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
-    print(f"[Info]: Finish creating model!", flush=True)
-
-    results = [["Id", "Category"]]
-    for feat_paths, mels in tqdm(dataloader):
-        with torch.no_grad():
-            mels = mels.to(device)
-            outs = model(mels)
-            preds = outs.argmax(1).cpu().numpy()
-            for feat_path, pred in zip(feat_paths, preds):
-                results.append([feat_path, mapping["id2speaker"][str(pred)]])
-
-    with open(output_path, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerows(results)
 
 
 if __name__ == "__main__":
